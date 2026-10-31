@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sail</title>
+  <style>
+    :root { color-scheme:dark; --bg:#0b1118; --panel:#121c27; --line:#243443; --muted:#91a2b3; --text:#edf5fb; --accent:#45dfbd; }
+    * { box-sizing:border-box; } body { margin:0; background:radial-gradient(ellipse at 50% -20%,#18313b,var(--bg) 60%); color:var(--text); font:15px/1.5 system-ui,sans-serif; }
+    main { width:min(760px,calc(100% - 32px)); margin:64px auto; } header { margin-bottom:28px; }
+    h1 { margin:0; font-size:38px; letter-spacing:-1.5px; } header p,.muted { color:var(--muted); margin:4px 0 0; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; margin:14px 0; }
+    .eyebrow { color:var(--muted); font-size:12px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; } #lender { margin:7px 0 0; font-size:20px; font-weight:650; }
+    .fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; } label { display:grid; gap:7px; color:var(--muted); font-size:13px; }
+    input { width:100%; border:1px solid var(--line); border-radius:8px; background:#0c141d; color:var(--text); padding:11px 12px; font:inherit; }
+    button { border:0; border-radius:8px; padding:11px 18px; background:var(--accent); color:#06231e; font:700 14px system-ui,sans-serif; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; } .actions { display:flex; gap:10px; align-items:center; margin-top:17px; }
+    .secondary { background:#253443; color:var(--text); } .statusline { display:flex; align-items:center; gap:10px; }
+    #state { color:var(--accent); font-weight:700; text-transform:uppercase; } #countdown { margin:9px 0 0; font-size:22px; font-variant-numeric:tabular-nums; }
+    #message { color:var(--muted); min-height:22px; margin:10px 0 0; }
+    .receipt { display:grid; grid-template-columns:90px 1fr 60px 150px; align-items:center; gap:12px; padding:11px 0; border-top:1px solid var(--line); }
+    .receipt:first-child { border-top:0; } .receipt-status { color:var(--accent); font-size:12px; font-weight:700; text-transform:uppercase; }
+    .receipt-time { color:var(--muted); font-size:12px; text-align:right; } footer { display:flex; justify-content:space-between; color:var(--muted); font-size:13px; margin:22px 2px; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    @media(max-width:560px) { main { margin:30px auto; } .receipt { grid-template-columns:70px 1fr 45px; } .receipt-time { grid-column:2/4; text-align:left; } footer { gap:12px; flex-direction:column; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Sail</h1><p>Borrow data from a friend, with a receipt.</p></header>
+    <section class="card"><div class="eyebrow">Lender</div><div id="lender">Loading…</div></section>
+    <section class="card"><div class="eyebrow">Request a loan</div>
+      <div class="fields" style="margin-top:14px"><label>MB<input id="mb" type="number" min="1" value="20"></label><label>Minutes<input id="minutes" type="number" min="1" value="10"></label></div>
+      <div class="actions"><button id="borrow">Borrow</button></div></section>
+    <section class="card"><div class="eyebrow">Session</div>
+      <div class="statusline" style="margin-top:10px">State <span id="state">IDLE</span><span class="muted" id="state-lender"></span></div><div id="countdown"></div>
+      <div class="actions"><button id="return" class="secondary" hidden>Return</button></div><p id="message" role="status"></p></section>
+    <section class="card"><div class="eyebrow" style="margin-bottom:10px">Recent receipts</div><div id="receipts"><span class="muted">Loading…</span></div></section>
+    <footer><span>Tailscale handles transport. Sail keeps the contract and receipt.</span><a href="https://app.mekodata.ai" target="_blank" rel="noopener noreferrer">Open Meko dashboard ↗</a></footer>
+  </main>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    let state = { status:"idle", lender:"", expiresAt:null };
+    function renderState() {
+      $("#lender").textContent = state.lender || "No lender configured";
+      $("#state").textContent = state.status || "idle";
+      $("#state-lender").textContent = state.lender ? `· ${state.lender}` : "";
+      $("#return").hidden = state.status !== "open";
+      const left = state.expiresAt ? Math.max(0, new Date(state.expiresAt) - Date.now()) : 0;
+      $("#countdown").textContent = state.status === "open"
+        ? `Expires in ${Math.floor(left / 60000)}m ${Math.floor(left % 60000 / 1000)}s`
+        : "";
+    }
+    function renderReceipts(records) {
+      const list = $("#receipts");
+      list.replaceChildren();
+      if (!records.length) { list.textContent = "No receipts yet."; list.className = "muted"; return; }
+      list.className = "";
+      records.forEach((record) => {
+        const row = document.createElement("div"); row.className = "receipt";
+        const status = document.createElement("span"); status.className = "receipt-status"; status.textContent = record.status || "record";
+        const lender = document.createElement("span"); lender.textContent = record.lender || "—";
+        const mb = document.createElement("span"); mb.textContent = record.mb == null ? "—" : `${record.mb}MB`;
+        const time = document.createElement("time"); time.className = "receipt-time";
+        const stamp = record.recorded_at || record.closed_at || record.opened_at;
+        time.textContent = stamp ? new Date(stamp).toLocaleString() : "—";
+        row.append(status, lender, mb, time); list.append(row);
+      });
+    }
+    async function refresh() {
+      const [statusResponse, receiptResponse] = await Promise.all([fetch("/api/status"), fetch("/api/receipts")]);
+      const [status, receipts] = await Promise.all([statusResponse.json(), receiptResponse.json()]);
+      if (!status.ok || !receipts.ok) throw new Error(status.error || receipts.error || "Could not refresh Sail.");
+      state = status.data;
+      renderState(); renderReceipts(receipts.data);
+    }
+    async function post(url, body) {
+      $("#message").textContent = "Working…";
+      $("#borrow").disabled = $("#return").disabled = true;
+      try {
+        const response = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || "Request failed.");
+        state = result.data.record ? { status:result.data.record.status, lender:result.data.record.lender, expiresAt:result.data.expiresAt || null } : state;
+        $("#message").textContent = "Saved receipt locally for Meko sync.";
+        await refresh();
+      } catch (error) {
+        $("#message").textContent = error.message;
+        refresh().catch((refreshError) => { $("#message").textContent += `; state refresh failed: ${refreshError.message}`; });
+      } finally { $("#borrow").disabled = $("#return").disabled = false; }
+    }
+    $("#borrow").addEventListener("click", () => post("/api/borrow", { mb:Number($("#mb").value), minutes:Number($("#minutes").value) }));
+    $("#return").addEventListener("click", () => {
+      const usedMb = Number(prompt("How many MB did you use?", "8"));
+      if (Number.isFinite(usedMb) && usedMb >= 0) post("/api/return", { usedMb });
+    });
+    refresh().catch((error) => { $("#message").textContent = error.message; });
+    setInterval(() => refresh().catch((error) => { $("#message").textContent = error.message; }), 3000);
+    setInterval(renderState, 1000);
+  </script>
+</body>
+</html>

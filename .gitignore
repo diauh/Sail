@@ -1,0 +1,5 @@
+.vscode/mcp.json
+.env
+node_modules/
+session.json
+receipts.jsonl
